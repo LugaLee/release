@@ -1,0 +1,117 @@
+环境：Ubuntu 14.04 、Mesos master/slave、Zookeeper
+安装依赖：
+
+[root@monitor:/home/mongoadmin]#apt-get install curl python-setuptools python-pip python-dev python-protobuf
+
+安装zookeeper:
+
+[root@monitor:/home/mongoadmin]#apt-get install zookeeperd
+Zookeeper有一个配置，每个Zookeeper需要知道它在quorum中的位置
+
+[root@monitor:/home/mongoadmin]#echo 1 | sudo dd of=/var/lib/zookeeper/myid
+
+设置Docker:
+
+[root@monitor:/home/mongoadmin]#echo "deb http://get.docker.io/ubuntu docker main" > /etc/apt/sources.list.d/docker.list
+
+[root@monitor:/home/mongoadmin]#apt-get update && apt-get install lxc-docker
+
+[root@monitor:/home/mongoadmin]#docker version
+
+ Client version: 1.0.0
+     Client API version: 1.12
+     Go version (client): go1.2.1
+     Git commit (client): 63fe64c
+     Server version: 1.0.0
+     Server API version: 1.12
+     Go version (server): go1.2.1
+     Git commit (server): 63fe64c
+ 
+
+从Docker Hub拉取一个ubuntu image
+
+[root@monitor:/home/mongoadmin]#docker pull libmesos/ubuntu
+ 
+
+配置Mesos:
+
+[root@monitor:/home/mongoadmin]#curl -fL http://downloads.mesosphere.io/master/ubuntu/14.04/mesos_0.19.0~ubuntu14.04%2B1_amd64.deb -o /tmp/mesos.deb
+[root@monitor:/home/mongoadmin]#dpkg -i /tmp/mesos.deb
+[root@monitor:/home/mongoadmin]#mkdir -p /etc/mesos-master
+[root@monitor:/home/mongoadmin]#echo in_memory | sudo dd of=/etc/mesos-master/registry
+## Mesos Python egg for use in authoring frameworks
+[root@monitor:/home/mongoadmin]#curl -fL http://downloads.mesosphere.io/master/ubuntu/14.04/mesos-0.19.0_rc2-py2.7-linux-x86_64.egg -o /tmp/mesos.egg
+[root@monitor:/home/mongoadmin]#easy_install /tmp/mesos.egg
+ 
+安装Marathon：
+
+[root@monitor:/home/mongoadmin]#curl -O http://downloads.mesosphere.io/marathon/marathon-0.6.0/marathon-0.6.0.tgz  
+[root@monitor:/home/mongoadmin]#tar xvzf marathon-0.6.0.tgz
+Mesos通过Deimos 管理Docker，通过pip安装Deimos:
+
+[root@monitor:/home/mongoadmin]#pip install deimos
+配置mesos 使用Deimos
+
+[root@monitor:/home/mongoadmin]#mkdir -p /etc/mesos-slave
+[root@monitor:/home/mongoadmin]#echo /usr/local/bin/deimos | sudo dd of=/etc/mesos-slave/containerizer_path
+[root@monitor:/home/mongoadmin]#echo external | sudo dd of=/etc/mesos-slave/isolation
+ 
+
+启动服务 ：
+
+[root@monitor:/home/mongoadmin]#initctl reload-configuration
+
+[root@monitor:/home/mongoadmin]#service docker start
+
+[root@monitor:/home/mongoadmin]#service zookeeper start
+
+[root@monitor:/home/mongoadmin]#service mesos-master start
+
+[root@monitor:/home/mongoadmin]#ervice mesos-slave start
+
+Mesos 在端口5050已经启动侦听，我们可以通过浏览器访问:http://10.1.22.35:5050/#/
+
+
+##### Starting Marathon #####
+
+[root@monitor:/home/mongoadmin]#cd marathon-0.6.0
+
+[root@monitor:/home/mongoadmin/marathon-0.6.0]#./bin/start --master zk://localhost:2181/mesos --zk_hosts localhost:2181
+
+ 
+Marathon 在端口8080已经启动侦听，我们可以通过浏览器访问：http://10.1.22.35:8080/#/
+
+ 
+启动容器
+我们通过Marathon启动一个容器的REST API提交如下:
+
+curl -X POST -H "Accept: application/json" -H "Content-Type: application/json" \
+localhost:8080/v2/apps -d '{
+"container": {"image": "docker:///libmesos/ubuntu", "options": ["--privileged"]},
+"cpus": 0.5,
+"cmd": "sleep 500",
+"id": "docker-tester",
+"instances": 1,
+"mem": 300
+}'
+
+我们通过在curl命令后选项"options"提交定制的Docker，我们能检查syslog ，因为mesos缺省日志是放在syslog中。
+
+Jun 27 07:24:58 vagrant-ubuntu-trusty-64 deimos[19227]: deimos.containerizer.docker.launch() exit 0 // docker run --sig-proxy --rm --cidfile /tmp/deimos/mesos/00d459fb-22ca-4af7-9a97-ef8a510905f2/cid -w /tmp/mesos-sandbox -v /tmp/deimos/mesos/00d459fb-22ca-4af7-9a97-ef8a510905f2/fs:/tmp/mesos-sandbox --privileged -p 31498:31498 -c 512 -m 300m -e PORT=31498 -e PORT0=31498 -e PORTS=31498 libmesos/ubuntu sh -c 'sleep 500'
+我们也能通过Marathon Rest API检查我们启动任务的状态：
+
+curl -X GET -H "Content-Type: application/json" localhost:8080/v2/apps
+ 
+
+更多关于Docker任务的信息可以通过Mesos GUI在Mesos主服务器的端口5050 ，现在我们测试一下任务的伸缩性，比如我们需要加入更多节点服务器，有两种办法，使用GUI或通过发出put请求。
+
+curl -X PUT -H "Content-Type: application/json" localhost:8080/v2/apps/docker-tester \
+"container": {"image": "docker:///libmesos/ubuntu", "options": ["--privileged"]},
+"cpus": 0.5,
+"cmd": "sleep 500",
+"id": "docker-tester",
+"instances": 2, # increasing the instance count to 2
+"mem": 300
+}'
+
+Marathon能确保所有docker进程启动运行，如果某个进程崩溃，Marathon会重新启动同样的进程，以确保每个配置运行一个实例，还有其他开源Mesos调度器如Apache Aurora, Airbnb's Chronos. 但是marathon比较直接简单提供好的REST API用来管理容器，虽然Mesos, Marathon 和Docker还很年轻，但是提供了基于Docker的杀手级集群管理组合。
